@@ -8,13 +8,28 @@ import math
 import re
 from datetime import datetime, timezone, timedelta
 from collections import Counter, defaultdict
+from contextlib import contextmanager
+from alive_progress import alive_bar
 
 import requests
+
 
 GITHUB_API = "https://api.github.com"
 USER_CACHE = {}
 REPO_CACHE = {}
 CONTRIB_CACHE = {}
+TELEMETRY = defaultdict(int)
+
+
+def telemetry_inc(key, amount=1):
+    TELEMETRY[key] += amount
+
+
+@contextmanager
+def noop_bar(*args, **kwargs):
+    def _noop():
+        return None
+    yield _noop
 
 # ----------- Lightweight skill lexicon -----------
 LANGUAGES = {
@@ -107,14 +122,18 @@ def gh_get(s: requests.Session, url: str, params=None, preview=False):
 
 def fetch_user(s: requests.Session, login: str):
     if login in USER_CACHE:
+        telemetry_inc("user_cache_hits")
         return USER_CACHE[login]
+    telemetry_inc("user_fetches")
     data = gh_get(s, f"{GITHUB_API}/users/{login}")
     USER_CACHE[login] = data
     return data
 
 def fetch_user_repos(s: requests.Session, login: str):
     if login in REPO_CACHE:
+        telemetry_inc("repo_cache_hits")
         return REPO_CACHE[login]
+    telemetry_inc("repo_fetches")
     repos = gh_get(
         s,
         f"{GITHUB_API}/users/{login}/repos",
@@ -127,7 +146,9 @@ def fetch_top_contributors(s: requests.Session, full_name: str, limit: int = 3):
     if not full_name:
         return []
     if full_name in CONTRIB_CACHE:
+        telemetry_inc("contrib_cache_hits")
         return CONTRIB_CACHE[full_name]
+    telemetry_inc("contrib_fetches")
     data = gh_get(
         s,
         f"{GITHUB_API}/repos/{full_name}/contributors",
@@ -199,6 +220,7 @@ def discover_candidates_from_repos(s, reqs, max_candidates=50, max_pages=3):
         if not data or "items" not in data:
             break
         for repo in data["items"]:
+            telemetry_inc("repos_examined")
             if len(owners) >= max_candidates:
                 stop = True
                 break
@@ -207,6 +229,7 @@ def discover_candidates_from_repos(s, reqs, max_candidates=50, max_pages=3):
             owner_info = repo["owner"]
             weight = 1 + min(5, int(repo.get("stargazers_count",0)/1000))
             if owner_info["type"] == "User":
+                telemetry_inc("user_owned_repos")
                 owner = owner_info["login"]
                 owners[owner] += weight
 
@@ -223,6 +246,7 @@ def discover_candidates_from_repos(s, reqs, max_candidates=50, max_pages=3):
                 # Track total stars
                 owner_repos[owner]["total_stars"] += repo.get("stargazers_count",0)
             else:
+                telemetry_inc("org_repos_examined")
                 contributors = fetch_top_contributors(s, repo.get("full_name",""), limit=3)
                 for contrib in contributors:
                     if not contrib or contrib.get("type") != "User":
@@ -242,6 +266,7 @@ def discover_candidates_from_repos(s, reqs, max_candidates=50, max_pages=3):
                             "repositories": []
                         }
                         org_contrib_additions += 1
+                        telemetry_inc("org_contrib_candidates")
                     owner_repos[login]["repositories"].append(repo)
                     owner_repos[login]["total_stars"] += repo.get("stargazers_count",0)
                     if len(owners) >= max_candidates or org_contrib_additions >= max_org_contribs:
@@ -356,45 +381,56 @@ def collect_user_features(s, u, reqs, max_repos=10):
     }
 
 def rank_candidates(s, usernames, reqs, owner_repos, limit, min_years, max_inactive_days):
+    if not usernames:
+        return []
+    bar_factory = alive_bar if alive_bar else noop_bar
     results = []
-    for i, u in enumerate(usernames):
-        seed = owner_repos.get(u)
-        if not seed:
-            continue
-        user = fetch_user(s, u)
-        if not user:
-            continue
-        if user.get("type") != "User":
-            continue
-        account_age_days = iso_to_age_days(user.get("created_at", ""))
-        if account_age_days < int(min_years * 365):
-            continue
-
-        if max_inactive_days is not None:
-            repo_push_ages = [
-                iso_to_age_days(
-                    r.get("pushed_at")
-                    or r.get("updated_at")
-                    or r.get("created_at")
-                    or ""
-                )
-                for r in seed.get("repositories", [])
-                if r
-            ]
-            if repo_push_ages and min(repo_push_ages) > max_inactive_days:
+    with bar_factory(len(usernames), title="Ranking candidates") as progress_bar:
+        for i, u in enumerate(usernames):
+            seed = owner_repos.get(u)
+            if not seed:
+                progress_bar()
+                continue
+            user = fetch_user(s, u)
+            if not user:
+                progress_bar()
+                continue
+            if user.get("type") != "User":
+                progress_bar()
+                continue
+            account_age_days = iso_to_age_days(user.get("created_at", ""))
+            if account_age_days < int(min_years * 365):
+                progress_bar()
                 continue
 
-        feat = collect_user_features(s, user, reqs)
-        if not feat:
-            continue
-        # small bump if their “seed” repo was strong
-        if seed and seed.get("stargazers_count", 0) >= 500:
-            feat["score"] = round(min(1.0, feat["score"] + 0.05), 4)
-        feat["total_stars"] = seed.get("total_stars", 0)
-        results.append(feat)
-        # Be polite to API
-        if (i+1) % 8 == 0:
-            time.sleep(0.6)
+            if max_inactive_days is not None:
+                repo_push_ages = [
+                    iso_to_age_days(
+                        r.get("pushed_at")
+                        or r.get("updated_at")
+                        or r.get("created_at")
+                        or ""
+                    )
+                    for r in seed.get("repositories", [])
+                    if r
+                ]
+                if repo_push_ages and min(repo_push_ages) > max_inactive_days:
+                    progress_bar()
+                    continue
+
+            feat = collect_user_features(s, user, reqs)
+            if not feat:
+                progress_bar()
+                continue
+            # small bump if their “seed” repo was strong
+            if seed and seed.get("stargazers_count", 0) >= 500:
+                feat["score"] = round(min(1.0, feat["score"] + 0.05), 4)
+            feat["total_stars"] = seed.get("total_stars", 0)
+            results.append(feat)
+            # Be polite to API
+            if (i+1) % 8 == 0:
+                time.sleep(0.6)
+            progress_bar()
     results.sort(key=lambda x: x["score"], reverse=True)
     return results[:limit]
 
@@ -439,6 +475,35 @@ def write_text_output(path, reqs, ranked, owner_toprepo):
                 f.write("   Contact: " + " | ".join(contact_lines) + "\n")
             f.write("\n")
 
+def print_preview(reqs, ranked, limit=5):
+    print("Dry run preview")
+    print(f"Languages: {', '.join(reqs['languages']) or '(none)'}")
+    print(f"Frameworks: {', '.join(reqs['frameworks']) or '(none)'}")
+    print(f"Keywords: {', '.join(reqs['keywords']) or '(none)'}")
+    print("Top candidates:")
+    for c in ranked[:limit]:
+        print(f"  - {c['name'] or c['login']} ({c['score']}) — {c['html_url']}")
+
+def print_discovery_telemetry():
+    summary = [
+        f"repos_examined={TELEMETRY.get('repos_examined',0)}",
+        f"user_repos={TELEMETRY.get('user_owned_repos',0)}",
+        f"org_repos={TELEMETRY.get('org_repos_examined',0)}",
+        f"org_contrib_candidates={TELEMETRY.get('org_contrib_candidates',0)}",
+        f"contrib_fetches={TELEMETRY.get('contrib_fetches',0)}",
+        f"contrib_cache_hits={TELEMETRY.get('contrib_cache_hits',0)}",
+    ]
+    print("Discovery telemetry: " + ", ".join(summary))
+
+def print_ranking_telemetry():
+    summary = [
+        f"user_fetches={TELEMETRY.get('user_fetches',0)}",
+        f"user_cache_hits={TELEMETRY.get('user_cache_hits',0)}",
+        f"repo_fetches={TELEMETRY.get('repo_fetches',0)}",
+        f"repo_cache_hits={TELEMETRY.get('repo_cache_hits',0)}",
+    ]
+    print("Ranking telemetry: " + ", ".join(summary))
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--job-file", required=True, help="Path to job posting text")
@@ -447,6 +512,7 @@ def main():
     ap.add_argument("--seed-pool", type=int, default=120, help="Max initial candidate pool before scoring")
     ap.add_argument("--min-years", type=float, default=3.0, help="Minimum account age in years")
     ap.add_argument("--max-inactive-days", type=int, default=180, help="Maximum days since last repo push (<=0 disables)")
+    ap.add_argument("--dry-run", action="store_true", help="Print results instead of writing output file")
     args = ap.parse_args()
 
     with open(args.job_file, "r", encoding="utf-8") as fh:
@@ -467,6 +533,7 @@ def main():
         sys.exit(2)
 
     print(f"Phase 1 complete. Identified {len(owners)} initial candidates.")
+    print_discovery_telemetry()
     # print(owners)
     # print(owner_repos)
 
@@ -483,11 +550,15 @@ def main():
         max_inactive_days,
     )
     print("Phase 2 complete.")
+    print_ranking_telemetry()
 
     # Phase 3: output
     print("Phase 3 - Output the top candidates.")
-    write_text_output(args.out, reqs, ranked, owner_repos)
-    print(f"Wrote {len(ranked)} candidates to {args.out}")
+    if args.dry_run:
+        print_preview(reqs, ranked, limit=args.max_candidates)
+    else:
+        write_text_output(args.out, reqs, ranked, owner_repos)
+        print(f"Wrote {len(ranked)} candidates to {args.out}")
     print("Phase 3 complete.")
 
 if __name__ == "__main__":
