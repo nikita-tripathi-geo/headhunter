@@ -186,7 +186,12 @@ def build_repo_query(reqs, page):
 def discover_candidates_from_repos(s, reqs, max_candidates=50, max_pages=3):
     owners = Counter()
     owner_repos = {}
+    org_contrib_additions = 0
+    max_org_contribs = max_candidates  # cap org-derived candidates
+    stop = False
     for page in range(1, max_pages+1):
+        if stop:
+            break
         params = build_repo_query(reqs, page)
         # print(params)
         data = gh_get(s, f"{GITHUB_API}/search/repositories", params=params)
@@ -194,6 +199,9 @@ def discover_candidates_from_repos(s, reqs, max_candidates=50, max_pages=3):
         if not data or "items" not in data:
             break
         for repo in data["items"]:
+            if len(owners) >= max_candidates:
+                stop = True
+                break
             if repo.get("fork"):
                 continue
             owner_info = repo["owner"]
@@ -220,8 +228,11 @@ def discover_candidates_from_repos(s, reqs, max_candidates=50, max_pages=3):
                     if not contrib or contrib.get("type") != "User":
                         continue
                     login = contrib["login"]
+                    is_new = login not in owner_repos
+                    if is_new and org_contrib_additions >= max_org_contribs:
+                        continue
                     owners[login] += weight
-                    if login not in owner_repos:
+                    if is_new:
                         owner_repos[login] = {
                             "full_name": repo.get("full_name"),
                             "html_url": repo.get("html_url"),
@@ -230,8 +241,14 @@ def discover_candidates_from_repos(s, reqs, max_candidates=50, max_pages=3):
                             "owner": contrib,
                             "repositories": []
                         }
+                        org_contrib_additions += 1
                     owner_repos[login]["repositories"].append(repo)
                     owner_repos[login]["total_stars"] += repo.get("stargazers_count",0)
+                    if len(owners) >= max_candidates or org_contrib_additions >= max_org_contribs:
+                        break
+                if len(owners) >= max_candidates:
+                    stop = True
+                    break
         if len(owners) >= max_candidates:
             break
     # pick top owners
