@@ -12,6 +12,9 @@ from collections import Counter, defaultdict
 import requests
 
 GITHUB_API = "https://api.github.com"
+USER_CACHE = {}
+REPO_CACHE = {}
+CONTRIB_CACHE = {}
 
 # ----------- Lightweight skill lexicon -----------
 LANGUAGES = {
@@ -20,15 +23,19 @@ LANGUAGES = {
 }
 FRAMEWORKS = {
     # backend
-    "django","flask","fastapi","spring","spring boot","quarkus","express","nestjs","laravel","rails",
+    "django","flask","fastapi","spring","spring boot","quarkus",
+    "express","nestjs","laravel","rails",
     # frontend
     "react","next.js","nextjs","vue","nuxt","angular","svelte",
     # data/ml
-    "pandas","numpy","scikit-learn","sklearn","pytorch","tensorflow","keras","xgboost","lightgbm",
+    "pandas","numpy","scikit-learn","sklearn","pytorch","tensorflow",
+    "keras","xgboost","lightgbm",
     # devops
-    "docker","kubernetes","k8s","terraform","ansible","pulumi","helm","github actions","circleci","travis","gitlab ci",
+    "docker","kubernetes","k8s","terraform","ansible","pulumi","helm",
+    "github actions","circleci","travis","gitlab ci",
     # systems
-    "grpc","protobuf","thrift","postgres","mysql","redis","kafka","rabbitmq","elasticsearch","clickhouse"
+    "grpc","protobuf","thrift","postgres","mysql","redis","kafka","rabbitmq",
+    "elasticsearch","clickhouse"
 }
 GENERAL_KEYWORDS = {
     "distributed systems","microservices","rest","grpc","event-driven","real-time",
@@ -98,6 +105,37 @@ def gh_get(s: requests.Session, url: str, params=None, preview=False):
         return r.json()
     return None
 
+def fetch_user(s: requests.Session, login: str):
+    if login in USER_CACHE:
+        return USER_CACHE[login]
+    data = gh_get(s, f"{GITHUB_API}/users/{login}")
+    USER_CACHE[login] = data
+    return data
+
+def fetch_user_repos(s: requests.Session, login: str):
+    if login in REPO_CACHE:
+        return REPO_CACHE[login]
+    repos = gh_get(
+        s,
+        f"{GITHUB_API}/users/{login}/repos",
+        params={"per_page": 100, "type": "owner", "sort": "updated"},
+    )
+    REPO_CACHE[login] = repos or []
+    return REPO_CACHE[login]
+
+def fetch_top_contributors(s: requests.Session, full_name: str, limit: int = 3):
+    if not full_name:
+        return []
+    if full_name in CONTRIB_CACHE:
+        return CONTRIB_CACHE[full_name]
+    data = gh_get(
+        s,
+        f"{GITHUB_API}/repos/{full_name}/contributors",
+        params={"per_page": limit, "anon": "false"},
+    )
+    CONTRIB_CACHE[full_name] = data[:limit] if isinstance(data, list) else []
+    return CONTRIB_CACHE[full_name]
+
 def iso_to_age_days(iso_str):
     try:
         dt = datetime.fromisoformat(iso_str.replace("Z","+00:00"))
@@ -124,7 +162,7 @@ def build_repo_query(reqs, page):
     lang_clause = " ".join(f"language:{qword(l)}" for l in langs[:6])
 
     # 2) quality/recency gates
-    pushed_since = (datetime.utcnow() - timedelta(days=365)).date().isoformat()
+    pushed_since = (datetime.now(timezone.utc) - timedelta(days=365)).date().isoformat()
     gates = f"stars:>20 pushed:>={pushed_since}"
 
     # 3) keywords OR-group, then one in: qualifier applied to the group
@@ -145,32 +183,6 @@ def build_repo_query(reqs, page):
         "page": page
     }
 
-# def build_repo_query(reqs, page):
-#     # Bias: stars>20, pushed recently, match any of languages & some keywords in name/desc/readme
-#     langs = reqs["languages"] or []
-#     kws = reqs["frameworks"] + reqs["keywords"]
-#     print(reqs)
-
-#     q_parts = []
-#     if langs:
-#         lang_clause = " OR ".join([f"language:{l}" for l in langs])
-#         q_parts.append(lang_clause)
-#     # prefer actively maintained repos
-#     q_parts.append("stars:>1") # TODO reset stars back to 20
-#     # GitHub search has size limits; include generic keywords lightly
-#     for w in kws[:6]:
-#         # search in name/description/readme
-#         q_parts.append(f"{w} in:name,description,readme")
-
-#     q = "+".join([re.sub(r"\s+", "+", p) for p in q_parts if p])
-#     return {
-#         "q": q,
-#         "sort": "stars",
-#         "order": "desc",
-#         "per_page": 100,
-#         "page": page
-#     }
-
 def discover_candidates_from_repos(s, reqs, max_candidates=50, max_pages=3):
     owners = Counter()
     owner_repos = {}
@@ -182,22 +194,44 @@ def discover_candidates_from_repos(s, reqs, max_candidates=50, max_pages=3):
         if not data or "items" not in data:
             break
         for repo in data["items"]:
-            owner = repo["owner"]["login"]
-            if repo.get("fork") or repo["owner"]["type"] != "User":
+            if repo.get("fork"):
                 continue
-            owners[owner] += 1 + min(5, int(repo.get("stargazers_count",0)/1000))
+            owner_info = repo["owner"]
+            weight = 1 + min(5, int(repo.get("stargazers_count",0)/1000))
+            if owner_info["type"] == "User":
+                owner = owner_info["login"]
+                owners[owner] += weight
 
-            if owner not in owner_repos:
-                owner_repos[owner] = {
-                    "full_name": repo.get("full_name"),
-                    "html_url": repo["owner"]["url"],
-                    "stargazers_count": repo.get("stargazers_count",0),
-                    "owner": repo.get("owner"),      # HACK maybe remove
-                    "repositories": []
-                }
-            owner_repos[owner]["repositories"].append(repo)
-            # Track total stars
-            owner_repos[owner]["stargazers_count"] += repo.get("stargazers_count",0)
+                if owner not in owner_repos:
+                    owner_repos[owner] = {
+                        "full_name": repo.get("full_name"),
+                        "html_url": repo.get("html_url"),
+                        "stargazers_count": repo.get("stargazers_count", 0),
+                        "total_stars": 0,
+                        "owner": owner_info,
+                        "repositories": []
+                    }
+                owner_repos[owner]["repositories"].append(repo)
+                # Track total stars
+                owner_repos[owner]["total_stars"] += repo.get("stargazers_count",0)
+            else:
+                contributors = fetch_top_contributors(s, repo.get("full_name",""), limit=3)
+                for contrib in contributors:
+                    if not contrib or contrib.get("type") != "User":
+                        continue
+                    login = contrib["login"]
+                    owners[login] += weight
+                    if login not in owner_repos:
+                        owner_repos[login] = {
+                            "full_name": repo.get("full_name"),
+                            "html_url": repo.get("html_url"),
+                            "stargazers_count": repo.get("stargazers_count", 0),
+                            "total_stars": 0,
+                            "owner": contrib,
+                            "repositories": []
+                        }
+                    owner_repos[login]["repositories"].append(repo)
+                    owner_repos[login]["total_stars"] += repo.get("stargazers_count",0)
         if len(owners) >= max_candidates:
             break
     # pick top owners
@@ -245,11 +279,8 @@ def repo_quality_heuristics(repo):
     return max(0.0, score)
 
 def collect_user_features(s, u, reqs, max_repos=10):
-
-    # Pull owned repos (updated first)
-    repos = gh_get(s, f"{GITHUB_API}/users/{u["login"]}/repos", params={"per_page": 100, "type":"owner","sort":"updated"})
-    if repos is None:
-        repos = []
+    # Pull owned repos (updated first) with memoization
+    repos = fetch_user_repos(s, u["login"])
 
     # Filter noise
     clean = [r for r in repos if not r.get("fork") and not r.get("archived")]
@@ -307,18 +338,42 @@ def collect_user_features(s, u, reqs, max_repos=10):
         "contact": contact
     }
 
-def rank_candidates(s, usernames, reqs, owner_repos, limit):
+def rank_candidates(s, usernames, reqs, owner_repos, limit, min_years, max_inactive_days):
     results = []
     for i, u in enumerate(usernames):
-        user = owner_repos[u]["owner"]
-        # print(user)
+        seed = owner_repos.get(u)
+        if not seed:
+            continue
+        user = fetch_user(s, u)
+        if not user:
+            continue
+        if user.get("type") != "User":
+            continue
+        account_age_days = iso_to_age_days(user.get("created_at", ""))
+        if account_age_days < int(min_years * 365):
+            continue
+
+        if max_inactive_days is not None:
+            repo_push_ages = [
+                iso_to_age_days(
+                    r.get("pushed_at")
+                    or r.get("updated_at")
+                    or r.get("created_at")
+                    or ""
+                )
+                for r in seed.get("repositories", [])
+                if r
+            ]
+            if repo_push_ages and min(repo_push_ages) > max_inactive_days:
+                continue
+
         feat = collect_user_features(s, user, reqs)
         if not feat:
             continue
         # small bump if their “seed” repo was strong
-        seed = owner_repos.get(u)
-        if seed and seed.get("stargazers_count",0) >= 500:
+        if seed and seed.get("stargazers_count", 0) >= 500:
             feat["score"] = round(min(1.0, feat["score"] + 0.05), 4)
+        feat["total_stars"] = seed.get("total_stars", 0)
         results.append(feat)
         # Be polite to API
         if (i+1) % 8 == 0:
@@ -339,8 +394,14 @@ def write_text_output(path, reqs, ranked, owner_toprepo):
             seed = owner_toprepo.get(c["login"])
             f.write(f"{idx}. {c['name'] or c['login']} — score {c['score']}\n")
             f.write(f"   GitHub: {c['html_url']}\n")
+            if c.get("total_stars") is not None:
+                f.write(f"   Total stars (matched repos): {c.get('total_stars', 0)}\n")
             if seed:
-                f.write(f"   Notable repo: {seed['full_name']} (⭐ {seed.get('stargazers_count',0)}) {seed['html_url']}\n")
+                repo_url = seed.get("html_url") or ""
+                f.write(
+                    f"   Notable repo: {seed['full_name']} (⭐ {seed.get('stargazers_count',0)}) "
+                    f"{repo_url}\n"
+                )
             if c["top_repo_names"]:
                 f.write(f"   Top repos: {', '.join(c['top_repo_names'])}\n")
             if c["languages"]:
@@ -367,6 +428,8 @@ def main():
     ap.add_argument("--out", default="top_candidates.txt")
     ap.add_argument("--max-candidates", type=int, default=10)
     ap.add_argument("--seed-pool", type=int, default=120, help="Max initial candidate pool before scoring")
+    ap.add_argument("--min-years", type=float, default=3.0, help="Minimum account age in years")
+    ap.add_argument("--max-inactive-days", type=int, default=180, help="Maximum days since last repo push (<=0 disables)")
     args = ap.parse_args()
 
     with open(args.job_file, "r", encoding="utf-8") as fh:
@@ -379,7 +442,7 @@ def main():
     print("Phase 1 - Discover candidates via top-rated GitHub repositories.")
 
     owners, owner_repos = discover_candidates_from_repos(
-        s, reqs, max_candidates=max(args.seed_pool, args.max_candidates*8), max_pages=3
+        s, reqs, max_candidates=max(args.seed_pool, args.max_candidates*4), max_pages=3
     )
 
     if not owners:
@@ -392,15 +455,22 @@ def main():
 
     # Phase 2: rank
     print("Phase 2 - Rank candidates using a heuristic (code quality, experience level, adoption).")
-    ranked = rank_candidates(s, owners, reqs, owner_repos, args.max_candidates)
+    max_inactive_days = args.max_inactive_days if args.max_inactive_days > 0 else None
+    ranked = rank_candidates(
+        s,
+        owners,
+        reqs,
+        owner_repos,
+        args.max_candidates,
+        args.min_years,
+        max_inactive_days,
+    )
     print("Phase 2 complete.")
 
     # Phase 3: output
     print("Phase 3 - Output the top candidates.")
-
     write_text_output(args.out, reqs, ranked, owner_repos)
     print(f"Wrote {len(ranked)} candidates to {args.out}")
-
     print("Phase 3 complete.")
 
 if __name__ == "__main__":
