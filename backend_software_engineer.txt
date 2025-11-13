@@ -1,0 +1,57 @@
+Backend Software Engineer, Subscriptions
+Palo Alto, CA
+About xAI
+
+xAI’s mission is to create AI systems that can accurately understand the universe and aid humanity in its pursuit of knowledge. Our team is small, highly motivated, and focused on engineering excellence. This organization is for individuals who appreciate challenging themselves and thrive on curiosity. We operate with a flat organizational structure. All employees are expected to be hands-on and to contribute directly to the company’s mission. Leadership is given to those who show initiative and consistently deliver excellence. Work ethic and strong prioritization skills are important. All engineers are expected to have strong communication skills. They should be able to concisely and accurately share knowledge with their teammates.
+
+About the Role
+
+We’re looking for an exceptional backend software engineer to join the Monetization Team at X, a high-impact group responsible for driving significant revenue through three key products: X Premium, X Verified Organizations, and the Creator Revenue Sharing Program. These products serve millions of users and businesses daily, powering subscriptions, growth, and creator monetization on one of the world’s largest platforms.
+
+As a backend engineer, you’ll design and build scalable, high-performance systems that power subscriptions infrastructure, new monetized products, user growth, and creator monetization. You’ll work on mission-critical infrastructure that processes millions of transactions, optimizes user acquisition and retention, and enables creators to earn a living through their content. This is a unique opportunity to make a large-scale revenue impact while creating products that users and businesses love.
+
+What you’ll do
+
+Design and build robust subscriptions infrastructure, handling payments and SKU technology across devices and platforms for millions of daily users.
+Develop growth systems to acquire, activate, and retain users, maximizing lifetime value and revenue.
+Create innovative products for X’s users and businesses, driving subscription adoption and engagement.
+Build algorithms and systems to support creators, enabling them to monetize high-quality content effectively.
+Lead technical decisions on architecture, scalability, and reliability for high-concurrency, low-latency systems.
+Collaborate with product, infrastructure, and compliance teams to deliver end-to-end functionality.
+Uphold engineering excellence through rigorous testing, monitoring, and continuous deployment practices.
+Who you are 
+
+Experience: 5+ years in backend or systems engineering, with experience in high-scale platforms.
+Expert in distributed systems: You’ve built and maintained systems with high concurrency, fault tolerance, and uptime.
+Builder mentality: You thrive in fast-paced, high-impact environments and are excited by solving zero-to-one problems.
+Strong communicator: You articulate complex technical ideas clearly, advocate for simple solutions, and avoid over-engineering.
+Revenue-minded: You understand the importance of building systems that drive business outcomes and user satisfaction.
+Bonus:
+Experience with payments infrastructure, subscription platforms, or creator monetization systems.
+Familiarity with growth engineering, user acquisition, or retention systems.
+Prior work in fintech, social platforms, or startups.
+Tech stack (optional)
+
+Languages: Scala, Python, Golang
+Infrastructure: Kubernetes, Apache
+Interview process
+
+After submitting your application, the team reviews your CV and statement of exceptional work. If your application passes this stage, you will be invited to a 30-minute phone interview with technical questions. If you clear the phone interview, you will proceed to:
+
+Coding assessment in a language of your choice.
+Systems design: Translate high-level requirements into a scalable, fault-tolerant service.
+Project deep-dive: Present your past exceptional work to a small audience.
+Meet and greet with the wider team.
+Our goal is to complete the main process within one week.
+
+Location
+
+The role is based in Palo Alto. Candidates are expected to be located near the Bay Area or open to relocation.
+
+Annual Salary Range
+
+$180,000 - $440,000 USD
+
+Benefits
+
+Base salary is just one part of our total rewards package at xAI, which also includes equity, comprehensive medical, vision, and dental coverage, access to a 401(k) retirement plan, short & long-term disability insurance, life insurance, and various other discounts and perks.
